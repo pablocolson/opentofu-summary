@@ -23,7 +23,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: stable
-          cache: true
+          # No external deps -> no go.sum -> nothing to cache.
+          cache: false
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6

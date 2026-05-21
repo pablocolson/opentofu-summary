@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Build-time variables populated by goreleaser via -ldflags. The "dev"
@@ -140,9 +142,10 @@ func isTerminal(w io.Writer) bool {
 // For "plan": runs `tofu plan -out=<tmp>` with passthrough args, then renders
 // a summary built from `tofu show -json <tmp>`.
 //
-// For "apply": same as plan, then asks for confirmation and runs
-// `tofu apply <tmp>` using the saved plan file. Auto-approves only if the
-// passthrough args already include `-auto-approve`.
+// For "apply": same as plan, then prompts the user for "yes" before running
+// `tofu apply <tmp>`. The prompt is mandatory because applying a saved plan
+// file bypasses tofu's own confirmation — without it, an apply would happen
+// immediately on top of the summary with no chance to cancel.
 func runWrapper(mode string, passthrough []string, stdout, stderr io.Writer) error {
 	tofu, err := resolveTofuBinary()
 	if err != nil {
@@ -158,7 +161,8 @@ func runWrapper(mode string, passthrough []string, stdout, stderr io.Writer) err
 
 	planArgs := append([]string{"plan", "-out=" + planPath}, passthrough...)
 	planCmd := exec.Command(tofu, planArgs...)
-	planCmd.Stdout = stderr // forward tofu's own output to stderr to keep stdout clean for piping
+	// Forward tofu's own output to stderr so stdout stays clean for piping.
+	planCmd.Stdout = stderr
 	planCmd.Stderr = stderr
 	planCmd.Stdin = os.Stdin
 	if err := planCmd.Run(); err != nil {
@@ -187,8 +191,16 @@ func runWrapper(mode string, passthrough []string, stdout, stderr io.Writer) err
 	if mode == "plan" {
 		return nil
 	}
+	if summary.Totals.Total() == 0 {
+		fmt.Fprintln(stdout, "Nothing to apply.")
+		return nil
+	}
 
-	// apply mode — re-use the saved plan so the user sees exactly what they reviewed.
+	if !confirmApply(stdout, os.Stdin) {
+		fmt.Fprintln(stdout, "Apply cancelled.")
+		return nil
+	}
+
 	applyCmd := exec.Command(tofu, "apply", planPath)
 	applyCmd.Stdout = stderr
 	applyCmd.Stderr = stderr
@@ -197,6 +209,17 @@ func runWrapper(mode string, passthrough []string, stdout, stderr io.Writer) err
 		return fmt.Errorf("tofu apply failed: %w", err)
 	}
 	return nil
+}
+
+// confirmApply mirrors tofu's own prompt: only the literal string "yes"
+// (case-insensitive, trimmed) authorizes the apply.
+func confirmApply(w io.Writer, r io.Reader) bool {
+	fmt.Fprint(w, "\nApply this plan? Only 'yes' will be accepted: ")
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(scanner.Text()), "yes")
 }
 
 // resolveTofuBinary returns the path to `tofu` if available, falling back to

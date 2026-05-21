@@ -1,4 +1,5 @@
 /tofu-summary
+/opentofu-summary
 /dist/
 *.tfplan
 *.tfplan.json

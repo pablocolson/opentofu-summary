@@ -2,22 +2,19 @@ package main
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
-// Summary holds aggregated information about a Plan, ready for rendering.
 type Summary struct {
-	Totals    Counts
-	ByType    []TypeBucket
-	ByModule  []ModuleBucket
-	Replaces  []ResourceChange
-	Destroys  []ResourceChange
-	Warnings  []Warning
-	FormatVer string
-	TFVersion string
+	Totals   Counts
+	ByType   []TypeBucket
+	ByModule []ModuleBucket
+	Replaces []ResourceChange
+	Destroys []ResourceChange
+	Warnings []Warning
 }
 
-// Counts holds per-action counts.
 type Counts struct {
 	Create  int
 	Update  int
@@ -28,60 +25,56 @@ type Counts struct {
 	Noop    int
 }
 
-// Total returns the count of all non-noop, non-read actions — the number a
-// human typically wants to see ("X to add, Y to change, Z to destroy").
+// Total returns the count of actionable changes — what tofu reports as
+// "X to add, Y to change, Z to destroy" (excludes no-ops and reads).
 func (c Counts) Total() int {
 	return c.Create + c.Update + c.Delete + c.Replace + c.Forget
 }
 
-// TypeBucket groups changes by resource type, splitting by action.
 type TypeBucket struct {
 	Type    string
 	Counts  Counts
-	Modules map[string]Counts // module_address -> counts
+	Modules map[string]Counts
 }
 
-// ModuleBucket groups changes by module address.
 type ModuleBucket struct {
 	Module string
 	Counts Counts
 	Groups []ResourceGroup
 }
 
-// ResourceGroup collapses multiple instances of the same (type, name) under
-// the same action within one module. Useful for count/for_each resources.
+// ResourceGroup collapses for_each / count instances of the same (type, name)
+// under the same action within one module.
 type ResourceGroup struct {
 	Type   string
 	Name   string
 	Action Action
 	Count  int
-	// Sample address for display (first encountered).
-	Sample string
 }
 
-// Warning is a human-readable note about something noteworthy in the plan.
 type Warning struct {
 	Severity string // "info", "warn", "danger"
 	Message  string
 }
 
-// Summarize walks a Plan and returns an aggregated Summary.
+// groupKey identifies a single ResourceGroup. Pulled out as a named type so
+// the aggregation map has an obvious shape.
+type groupKey struct {
+	module, typ, name string
+	action            Action
+}
+
 func Summarize(p *Plan) *Summary {
-	s := &Summary{
-		FormatVer: p.FormatVersion,
-		TFVersion: p.TerraformVersion,
-	}
+	s := &Summary{}
 
 	typeIndex := map[string]*TypeBucket{}
 	moduleIndex := map[string]*ModuleBucket{}
-	// (module, type, name, action) -> *ResourceGroup
-	groupIndex := map[string]*ResourceGroup{}
+	groupCounts := map[groupKey]int{}
 
 	for _, rc := range p.ResourceChanges {
 		action := ParseAction(rc.Change.Actions)
 		incrementCounts(&s.Totals, action)
 
-		// Per-type bucket.
 		tb, ok := typeIndex[rc.Type]
 		if !ok {
 			tb = &TypeBucket{Type: rc.Type, Modules: map[string]Counts{}}
@@ -92,7 +85,6 @@ func Summarize(p *Plan) *Summary {
 		incrementCounts(&mc, action)
 		tb.Modules[rc.ModuleAddress] = mc
 
-		// Per-module bucket.
 		mb, ok := moduleIndex[rc.ModuleAddress]
 		if !ok {
 			mb = &ModuleBucket{Module: rc.ModuleAddress}
@@ -100,22 +92,8 @@ func Summarize(p *Plan) *Summary {
 		}
 		incrementCounts(&mb.Counts, action)
 
-		// Per-(module,type,name,action) group inside the module bucket.
-		key := rc.ModuleAddress + "\x00" + rc.Type + "\x00" + rc.Name + "\x00" + action.String()
-		g, ok := groupIndex[key]
-		if !ok {
-			g = &ResourceGroup{
-				Type:   rc.Type,
-				Name:   rc.Name,
-				Action: action,
-				Sample: rc.Address,
-			}
-			groupIndex[key] = g
-			mb.Groups = append(mb.Groups, ResourceGroup{}) // placeholder, fixed below
-		}
-		g.Count++
+		groupCounts[groupKey{rc.ModuleAddress, rc.Type, rc.Name, action}]++
 
-		// Track destroys and replaces individually for the "pay attention" output.
 		switch action {
 		case ActionReplace:
 			s.Replaces = append(s.Replaces, rc)
@@ -124,19 +102,20 @@ func Summarize(p *Plan) *Summary {
 		}
 	}
 
-	// Materialize per-module groups in a deterministic order.
+	for k, count := range groupCounts {
+		mb := moduleIndex[k.module]
+		mb.Groups = append(mb.Groups, ResourceGroup{
+			Type:   k.typ,
+			Name:   k.name,
+			Action: k.action,
+			Count:  count,
+		})
+	}
+	// Sort groups within each module: most disruptive action first, then by
+	// type, then by name.
 	for _, mb := range moduleIndex {
-		mb.Groups = mb.Groups[:0]
-		// Collect all keys for this module from groupIndex.
-		var keys []string
-		prefix := mb.Module + "\x00"
-		for k := range groupIndex {
-			if strings.HasPrefix(k, prefix) {
-				keys = append(keys, k)
-			}
-		}
-		sort.Slice(keys, func(i, j int) bool {
-			gi, gj := groupIndex[keys[i]], groupIndex[keys[j]]
+		sort.Slice(mb.Groups, func(i, j int) bool {
+			gi, gj := mb.Groups[i], mb.Groups[j]
 			if gi.Action != gj.Action {
 				return actionRank(gi.Action) < actionRank(gj.Action)
 			}
@@ -145,12 +124,8 @@ func Summarize(p *Plan) *Summary {
 			}
 			return gi.Name < gj.Name
 		})
-		for _, k := range keys {
-			mb.Groups = append(mb.Groups, *groupIndex[k])
-		}
 	}
 
-	// Flatten and sort modules.
 	for _, mb := range moduleIndex {
 		s.ByModule = append(s.ByModule, *mb)
 	}
@@ -158,8 +133,8 @@ func Summarize(p *Plan) *Summary {
 		return s.ByModule[i].Module < s.ByModule[j].Module
 	})
 
-	// Flatten and sort types. Sort by total change count desc, then name asc,
-	// so the most impacted resource types surface first.
+	// Sort types by impact (descending), tie-breaking on name. Most affected
+	// resource types should surface first.
 	for _, tb := range typeIndex {
 		s.ByType = append(s.ByType, *tb)
 	}
@@ -171,7 +146,7 @@ func Summarize(p *Plan) *Summary {
 		return s.ByType[i].Type < s.ByType[j].Type
 	})
 
-	s.Warnings = detectWarnings(p, s)
+	s.Warnings = detectWarnings(s)
 	return s
 }
 
@@ -194,7 +169,6 @@ func incrementCounts(c *Counts, a Action) {
 	}
 }
 
-// actionRank orders actions so the most disruptive show up first inside a module listing.
 func actionRank(a Action) int {
 	switch a {
 	case ActionReplace:
@@ -215,9 +189,9 @@ func actionRank(a Action) int {
 }
 
 // statefulPatterns lists case-insensitive substrings of resource type names
-// that suggest persistent state — destroying or replacing these means data loss
-// unless backups exist. The list is intentionally conservative: false positives
-// (a warning on a stateless resource) cost less than false negatives.
+// that suggest persistent state — destroying or replacing these means data
+// loss unless backups exist. Conservative on purpose: false positives (a
+// warning on a stateless resource) cost less than false negatives.
 var statefulPatterns = []string{
 	"volume",
 	"disk",
@@ -245,10 +219,9 @@ func isStateful(resourceType string) bool {
 	return false
 }
 
-func detectWarnings(_ *Plan, s *Summary) []Warning {
+func detectWarnings(s *Summary) []Warning {
 	var ws []Warning
 
-	// Stateful destroys.
 	var statefulDestroys []string
 	for _, rc := range s.Destroys {
 		if isStateful(rc.Type) {
@@ -262,11 +235,12 @@ func detectWarnings(_ *Plan, s *Summary) []Warning {
 		})
 	}
 
-	// Stateful replaces.
-	var statefulReplaces []string
+	var statefulReplaces, otherReplaces []string
 	for _, rc := range s.Replaces {
 		if isStateful(rc.Type) {
 			statefulReplaces = append(statefulReplaces, rc.Address)
+		} else {
+			otherReplaces = append(otherReplaces, rc.Address)
 		}
 	}
 	if len(statefulReplaces) > 0 {
@@ -275,18 +249,10 @@ func detectWarnings(_ *Plan, s *Summary) []Warning {
 			Message:  pluralizeAddresses("replace of persistent resource", statefulReplaces),
 		})
 	}
-
-	// Non-stateful replaces — still worth a heads-up but lower severity.
-	if len(s.Replaces) > len(statefulReplaces) {
-		var others []string
-		for _, rc := range s.Replaces {
-			if !isStateful(rc.Type) {
-				others = append(others, rc.Address)
-			}
-		}
+	if len(otherReplaces) > 0 {
 		ws = append(ws, Warning{
 			Severity: "warn",
-			Message:  pluralizeAddresses("replacement", others),
+			Message:  pluralizeAddresses("replacement", otherReplaces),
 		})
 	}
 
@@ -297,36 +263,12 @@ func pluralizeAddresses(noun string, addrs []string) string {
 	if len(addrs) == 1 {
 		return noun + ": " + addrs[0]
 	}
-	// Show up to 5 addresses, truncate the rest.
 	const maxShown = 5
 	shown := addrs
 	suffix := ""
 	if len(shown) > maxShown {
 		shown = shown[:maxShown]
-		suffix = " (+" + itoa(len(addrs)-maxShown) + " more)"
+		suffix = " (+" + strconv.Itoa(len(addrs)-maxShown) + " more)"
 	}
-	return noun + "s (" + itoa(len(addrs)) + "): " + strings.Join(shown, ", ") + suffix
-}
-
-// itoa is a tiny dependency-free integer to string helper.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	negative := n < 0
-	if negative {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if negative {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return noun + "s (" + strconv.Itoa(len(addrs)) + "): " + strings.Join(shown, ", ") + suffix
 }

@@ -15,23 +15,24 @@ Single Go package, kept deliberately flat so `go install` and one-file edits
 stay simple. No external Go dependencies — only the standard library.
 
 ```
-main.go         CLI entry, flag parsing, `plan`/`apply` subcommand wrappers
-plan.go         Minimal subset of the tofu/terraform JSON plan schema
-summary.go      Aggregation: per-type, per-module, per-(type,name,action) groups
-render.go       Text renderer with optional ANSI color (auto-detects TTY)
-summary_test.go Tests + fixture mirroring the real-world route-migration plan
-gen_fixture/    Tiny binary that emits the demo plan JSON for eyeballing
+main.go               CLI entry, flag parsing, `plan`/`apply` subcommand wrappers
+plan.go               Minimal subset of the tofu/terraform JSON plan schema
+summary.go            Aggregation: per-type, per-module, per-(type,name,action) groups
+render.go             Text renderer with optional ANSI color (auto-detects TTY)
+summary_test.go       Tests + fixture mirroring the real-world route-migration plan
+_examples/gen_fixture/  Tiny binary that emits the demo plan JSON for eyeballing
+                        (under `_`-prefixed dir so `go install ./...` skips it)
 ```
 
 ## Common commands
 
 ```sh
-go test ./...                                # unit tests
-go vet ./...                                 # static checks
-go build -o tofu-summary .                   # binary at ./tofu-summary
-go run ./gen_fixture | go run .              # eyeball the demo summary
-go run ./gen_fixture | go run . -v           # …with per-module detail
-./tofu-summary -plan plan.json               # against a captured plan
+go test ./...                                          # unit tests
+go vet ./...                                           # static checks
+go build -o tofu-summary .                             # binary at ./tofu-summary
+go run ./_examples/gen_fixture | go run .              # eyeball the demo summary
+go run ./_examples/gen_fixture | go run . -v           # …with per-module detail
+./tofu-summary -plan plan.json                         # against a captured plan
 ```
 
 ## Things worth knowing

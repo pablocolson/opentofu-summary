@@ -1,5 +1,9 @@
 # tofu-summary
 
+[![ci](https://github.com/pablocolson/opentofu-summary/actions/workflows/ci.yml/badge.svg)](https://github.com/pablocolson/opentofu-summary/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/pablocolson/opentofu-summary?logo=github)](https://github.com/pablocolson/opentofu-summary/releases/latest)
+[![license](https://img.shields.io/github/license/pablocolson/opentofu-summary)](LICENSE)
+
 Condensed, readable summaries of OpenTofu / Terraform plans.
 
 Built because a real `tofu apply` against a multi-region OpenStack platform
@@ -115,13 +119,14 @@ alias tofu-plan='tofu plan -out=/tmp/tfplan && tofu show -json /tmp/tfplan | tof
 ## Development
 
 ```sh
-go test ./...                      # run tests
-go run ./gen_fixture | go run .    # render the route-migration demo
+go test ./...                                # run tests
+go run ./_examples/gen_fixture | go run .    # render the route-migration demo
 ```
 
 The test fixture in `summary_test.go` mirrors the real-world plan that
 motivated this project, so changes to the renderer can be eyeballed by
-running the demo command above.
+running the demo command above. `_examples/` lives outside the install path
+(the leading `_` makes `go install ./...` skip it).
 
 ## Releasing
 

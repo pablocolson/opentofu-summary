@@ -6,14 +6,13 @@ import (
 	"io"
 )
 
-// Plan is a minimal subset of the `tofu show -json` / `terraform show -json` schema.
-// We only model the fields we need to produce a summary. The full schema is documented at
-// https://opentofu.org/docs/internals/json-format/ and is stable across the 1.x line.
+// Plan is a minimal subset of the `tofu show -json` / `terraform show -json`
+// schema — only the fields the summarizer reads. Full schema:
+// https://opentofu.org/docs/internals/json-format/ (stable across 1.x).
 type Plan struct {
-	FormatVersion    string            `json:"format_version"`
-	TerraformVersion string            `json:"terraform_version"`
-	ResourceChanges  []ResourceChange  `json:"resource_changes"`
-	OutputChanges    map[string]Change `json:"output_changes,omitempty"`
+	FormatVersion    string           `json:"format_version"`
+	TerraformVersion string           `json:"terraform_version"`
+	ResourceChanges  []ResourceChange `json:"resource_changes"`
 }
 
 type ResourceChange struct {
@@ -27,18 +26,9 @@ type ResourceChange struct {
 }
 
 type Change struct {
-	Actions      []string        `json:"actions"`
-	Before       json.RawMessage `json:"before,omitempty"`
-	After        json.RawMessage `json:"after,omitempty"`
-	ReplacePaths json.RawMessage `json:"replace_paths,omitempty"`
-	Importing    json.RawMessage `json:"importing,omitempty"`
+	Actions []string `json:"actions"`
 }
 
-// Action represents the kind of change for a single resource. It is computed from
-// Change.Actions which can be ["no-op"], ["create"], ["read"], ["update"], ["delete"],
-// ["delete","create"] (replace, destroy-first) or ["create","delete"] (replace,
-// create-before-destroy). OpenTofu also defines ["forget"] for resources removed
-// from state without destroying the underlying object.
 type Action int
 
 const (
@@ -73,12 +63,12 @@ func (a Action) String() string {
 	}
 }
 
-// ParseAction reduces a Change.Actions slice to a single Action. The semantics
-// match those used by tofu/terraform when printing the textual plan.
+// ParseAction reduces a Change.Actions slice to a single Action. The shapes
+// tofu/terraform emit are: ["no-op"], ["create"], ["read"], ["update"],
+// ["delete"], ["forget"], ["delete","create"] (replace) and
+// ["create","delete"] (replace with create-before-destroy).
 func ParseAction(actions []string) Action {
 	switch len(actions) {
-	case 0:
-		return ActionUnknown
 	case 1:
 		switch actions[0] {
 		case "no-op":
@@ -95,7 +85,6 @@ func ParseAction(actions []string) Action {
 			return ActionForget
 		}
 	case 2:
-		// ["delete","create"] or ["create","delete"] — both mean replace.
 		a, b := actions[0], actions[1]
 		if (a == "delete" && b == "create") || (a == "create" && b == "delete") {
 			return ActionReplace
@@ -104,11 +93,9 @@ func ParseAction(actions []string) Action {
 	return ActionUnknown
 }
 
-// ParsePlan decodes a tofu/terraform plan-as-JSON document.
 func ParsePlan(r io.Reader) (*Plan, error) {
 	var p Plan
-	dec := json.NewDecoder(r)
-	if err := dec.Decode(&p); err != nil {
+	if err := json.NewDecoder(r).Decode(&p); err != nil {
 		return nil, fmt.Errorf("decoding plan JSON: %w", err)
 	}
 	return &p, nil
