@@ -1,0 +1,9 @@
+/tofu-summary
+/dist/
+*.tfplan
+*.tfplan.json
+.terraform/
+*.test
+.idea/
+.vscode/
+.DS_Store

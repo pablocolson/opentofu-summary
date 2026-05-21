@@ -1,0 +1,88 @@
+# GoReleaser configuration.
+# Docs: https://goreleaser.com
+#
+# This file drives the GitHub Actions release workflow defined in
+# .github/workflows/release.yml. Each `git tag vX.Y.Z` push:
+#   1. cross-builds the binary for darwin/linux × amd64/arm64
+#   2. creates a GitHub release with archives + checksums
+#   3. updates the Homebrew formula in pablocolson/homebrew-tap
+version: 2
+
+project_name: tofu-summary
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: tofu-summary
+    main: .
+    binary: tofu-summary
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+
+# Publishes a Homebrew formula to pablocolson/homebrew-tap so users can install
+# via `brew install pablocolson/tap/tofu-summary`. The push to the tap repo
+# uses the HOMEBREW_TAP_GITHUB_TOKEN secret (a Personal Access Token with
+# `repo` scope) configured on the source repo.
+brews:
+  - name: tofu-summary
+    repository:
+      owner: pablocolson
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/pablocolson/opentofu-summary"
+    description: "Condensed, readable summaries of OpenTofu/Terraform plans"
+    license: "MIT"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    install: |
+      bin.install "tofu-summary"
+    test: |
+      system "#{bin}/tofu-summary", "-version"
+
+release:
+  prerelease: auto
+  draft: false
+  name_template: "v{{ .Version }}"
